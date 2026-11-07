@@ -1,0 +1,660 @@
+local ADDON, ns = ...
+
+local UI = {}
+ns.UI = UI
+
+local COLS, SIZE, GAP, PAD = 10, 37, 4, 8
+local MIN_ROWS = 4
+local GRID_W = COLS * (SIZE + GAP) - GAP
+local ATTIC, BOTTOM_BAR = 60, 44 -- inset starts 60px below the top; bottom bar fits two money rows
+
+local GetItemInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
+local GetItemIcon = C_Item and C_Item.GetItemIconByID or GetItemIcon
+local GetItemQuality = C_Item and C_Item.GetItemQualityByID or function() end
+
+local EMPTY_SLOT = "Interface\\PaperDoll\\UI-Backpack-EmptySlot"
+-- label, r, g, b, corner icon
+local STATUS = {
+	flight   = { "In flight",                        0.40, 0.78, 1.00, "Interface\\Minimap\\Tracking\\Mailbox" },
+	mailbox  = { "In the banker's mailbox",          1.00, 0.82, 0.00, "Interface\\Minimap\\Tracking\\Mailbox" },
+	returned = { "Returned by the AH, in mailbox",   1.00, 0.60, 0.20, "Interface\\Buttons\\UI-RefreshButton" },
+	auction  = { "On the auction house",             1.00, 0.82, 0.00, "Interface\\Minimap\\Tracking\\Auctioneer" },
+	toMain   = { "Sent back to a main",              0.40, 1.00, 0.40, "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up" },
+	owned    = { "With the banker",                  1.00, 1.00, 1.00 },
+	unknown  = { "Unknown: left the banker's bags",  0.60, 0.60, 0.60, "Interface\\RaidFrame\\ReadyCheck-Waiting" },
+}
+
+-- One corner icon per slot: the status that most needs attention wins.
+local FLAG_ORDER = { "unknown", "returned", "toMain", "flight", "mailbox", "auction" }
+
+local function Flag(r)
+	for _, key in ipairs(FLAG_ORDER) do
+		if r[key] then return STATUS[key][5] end
+	end
+end
+
+--[[ Window ]]--
+
+local f = CreateFrame("Frame", "BankiAltFrame", UIParent, "ButtonFrameTemplate")
+f:SetWidth(GRID_W + 2 * PAD + 10)
+f:SetPoint("CENTER")
+f:SetToplevel(true)
+f:SetMovable(true)
+f:SetClampedToScreen(true)
+f:EnableMouse(true)
+f:RegisterForDrag("LeftButton")
+f:Hide()
+tinsert(UISpecialFrames, f:GetName())
+
+if f.SetPortraitToAsset then f:SetPortraitToAsset(ns.ICON) end
+
+local function SetTitle(text)
+	if f.SetTitle then f:SetTitle(text) end
+end
+
+f:SetScript("OnDragStart", f.StartMoving)
+f:SetScript("OnDragStop", function(self)
+	self:StopMovingOrSizing()
+	local point, _, relPoint, x, y = self:GetPoint()
+	ns.db.ui.point = { point, relPoint, x, y }
+	UI.dock = nil -- dragged away: no longer docked
+end)
+f:SetScript("OnShow", function() PlaySound(SOUNDKIT.IG_BACKPACK_OPEN) end)
+f:SetScript("OnHide", function() PlaySound(SOUNDKIT.IG_BACKPACK_CLOSE) end)
+
+local ageText = f:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+ageText:SetPoint("TOPLEFT", 64, -38)
+ageText:SetPoint("RIGHT", -10, 0)
+ageText:SetJustifyH("LEFT")
+
+-- Bag grid
+local bag = CreateFrame("Frame", nil, f.Inset)
+bag:SetPoint("TOPLEFT", PAD, -PAD)
+bag:SetWidth(GRID_W)
+
+local setupText = f.Inset:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+setupText:SetPoint("CENTER", bag)
+setupText:SetWidth(GRID_W - 40)
+
+-- Outgoing section (main at mailbox)
+local out = CreateFrame("Frame", nil, f.Inset)
+out:SetPoint("TOPLEFT", bag, "BOTTOMLEFT", 0, -10)
+out:SetWidth(GRID_W)
+
+local outLabel = out:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+outLabel:SetPoint("TOPLEFT")
+
+local outHint = out:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+outHint:SetPoint("TOPRIGHT")
+
+local outGrid = CreateFrame("Frame", nil, out)
+outGrid:SetPoint("TOPLEFT", 0, -18)
+outGrid:SetWidth(GRID_W)
+
+-- Bottom bar: action buttons or summary on the left; the banker's money on the right in two rows
+f.Inset:SetPoint("BOTTOMRIGHT", -6, BOTTOM_BAR)
+
+local action = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+action:SetSize(130, 22)
+action:SetPoint("BOTTOMLEFT", 4, 11)
+
+local clear = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+clear:SetSize(80, 22)
+clear:SetPoint("LEFT", action, "RIGHT", 2, 0)
+clear:SetText(CLEAR_ALL or "Clear")
+clear:SetScript("OnClick", ns.ClearStaged)
+
+local summary = f:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+summary:SetPoint("BOTTOMLEFT", 12, 17)
+
+local moneyBox = CreateFrame("Frame", nil, f)
+moneyBox:SetAllPoints()
+
+local function MoneyRow(name, label, y)
+	local m = CreateFrame("Frame", name, moneyBox, "SmallMoneyFrameTemplate")
+	m:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -2, y)
+	MoneyFrame_SetType(m, "STATIC")
+	local text = moneyBox:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+	text:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 222, y + 2)
+	text:SetText(label)
+	return m, text
+end
+
+local money = MoneyRow("BankiAltFrameMoney", "Current:", 24)
+local expected, expectedLabel = MoneyRow("BankiAltFrameExpected", "Expected:", 7)
+
+-- explain the second row on hover
+local expectedHit = CreateFrame("Frame", nil, moneyBox)
+expectedHit:SetPoint("TOPLEFT", expectedLabel, -2, 2)
+expectedHit:SetPoint("BOTTOMRIGHT", expectedLabel, 2, -2)
+expectedHit:SetScript("OnEnter", function(self)
+	GameTooltip:SetOwner(self, "ANCHOR_TOP")
+	GameTooltip:SetText("Expected income")
+	GameTooltip:AddLine("Running auctions, minus the auction house's 5% cut, plus sale gold waiting in the banker's mailbox.", 1, 1, 1, true)
+	GameTooltip:AddLine("It goes down when items come back from the AH or the gold is taken, which then counts as current money.", 0.8, 0.8, 0.8, true)
+	GameTooltip:Show()
+end)
+expectedHit:SetScript("OnLeave", GameTooltip_Hide)
+
+--[[ Dropping items ]]--
+
+function UI.Drop()
+	local kind, itemID = GetCursorInfo()
+	if kind ~= "item" then return end
+	if ns.Mode() ~= "send" then
+		ns.Print("Items can only be added at a mailbox, on one of your main characters.")
+		return
+	end
+	local bagID, slot = ns.FindLockedSlot(itemID)
+	ClearCursor()
+	if bagID then
+		ns.Stage(bagID, slot)
+	else
+		ns.Print("Only items from your bags can be added.")
+	end
+end
+
+f:SetScript("OnReceiveDrag", UI.Drop)
+f.Inset:EnableMouse(true)
+f.Inset:SetScript("OnReceiveDrag", UI.Drop)
+f.Inset:SetScript("OnMouseUp", UI.Drop)
+
+--[[ Slots ]]--
+
+StaticPopupDialogs["BANKIALT_FORGET"] = {
+	text = "Remove %s from the virtual bag?",
+	button1 = REMOVE or YES,
+	button2 = CANCEL,
+	OnAccept = function(_, itemID) ns.Forget(itemID) end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+}
+
+local function SlotOnEnter(self)
+	if not self.itemID then return end
+	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+	if self.link then
+		GameTooltip:SetHyperlink(self.link)
+	else
+		GameTooltip:SetItemByID(self.itemID)
+	end
+
+	local r = self.breakdown
+	GameTooltip:AddLine(" ")
+	if r then
+		GameTooltip:AddDoubleLine(ns.db.banker, r.total, NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b, 1, 1, 1)
+		for _, key in ipairs(ns.STATUSES) do
+			if r[key] then
+				local s = STATUS[key]
+				local label = s[5] and format("|T%s:14|t %s", s[5], s[1]) or s[1]
+				GameTooltip:AddDoubleLine(label, r[key], s[2], s[3], s[4], 1, 1, 1)
+			end
+		end
+		GameTooltip:AddLine("Right-click to remove it from the virtual bag.", 0.6, 0.6, 0.6)
+	else
+		GameTooltip:AddLine("Right-click to take it off the outgoing list.", 0.6, 0.6, 0.6)
+	end
+	GameTooltip:Show()
+end
+
+local function SlotOnClick(self, button)
+	if GetCursorInfo() then
+		return UI.Drop()
+	end
+	if not self.itemID then return end
+	local link = self.link or select(2, GetItemInfo(self.itemID))
+	if IsModifiedClick() then
+		HandleModifiedItemClick(link)
+	elseif button == "RightButton" then
+		if self.staged then
+			ns.Unstage(self.staged)
+		else
+			StaticPopup_Show("BANKIALT_FORGET", link or ("item " .. self.itemID), nil, self.itemID)
+		end
+	end
+end
+
+local function NewPool(parent)
+	local pool = {}
+	function pool:Get(i)
+		if self[i] then return self[i] end
+		local ok, b = pcall(CreateFrame, "ItemButton", nil, parent)
+		if not ok then
+			b = CreateFrame("Button", nil, parent, "ItemButtonTemplate")
+		end
+		b:SetSize(SIZE, SIZE)
+		b:SetPoint("TOPLEFT", ((i - 1) % COLS) * (SIZE + GAP), -math.floor((i - 1) / COLS) * (SIZE + GAP))
+		b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+		b:SetScript("OnEnter", SlotOnEnter)
+		b:SetScript("OnLeave", GameTooltip_Hide)
+		b:SetScript("OnClick", SlotOnClick)
+		b:SetScript("OnReceiveDrag", UI.Drop)
+		b.flag = b:CreateTexture(nil, "OVERLAY", nil, 7)
+		b.flag:SetSize(16, 16)
+		b.flag:SetPoint("TOPRIGHT", 3, 3)
+		self[i] = b
+		return b
+	end
+	-- Fills `slots` slots: the first ones with entries, the rest empty. Returns the grid height.
+	function pool:Fill(entries, slots)
+		for i = 1, slots do
+			local b, e = self:Get(i), entries[i]
+			b.itemID, b.link, b.staged, b.breakdown = e and e.itemID, e and e.link, e and e.staged, e and e.breakdown
+			if e then
+				SetItemButtonTexture(b, GetItemIcon(e.itemID))
+				SetItemButtonCount(b, e.count)
+				SetItemButtonQuality(b, GetItemQuality(e.itemID), e.link or e.itemID)
+			else
+				SetItemButtonTexture(b, EMPTY_SLOT)
+				SetItemButtonCount(b, 0)
+				SetItemButtonQuality(b, nil)
+			end
+			local r = e and e.breakdown
+			local flag = r and Flag(r)
+			b.flag:SetTexture(flag or nil)
+			b.flag:SetShown(flag and true or false)
+			b:Show()
+		end
+		for i = slots + 1, #self do self[i]:Hide() end
+		return math.ceil(slots / COLS) * (SIZE + GAP) - GAP
+	end
+	return pool
+end
+
+local bagSlots = NewPool(bag)
+local outSlots = NewPool(outGrid)
+
+--[[ Refresh ]]--
+
+local function Age(t)
+	return SecondsToTime(math.max(60, time() - t), true, false, 1)
+end
+
+local function ItemName(itemID)
+	return GetItemInfo(itemID) or ""
+end
+
+local function TrackedEntries(d)
+	local list = {}
+	if not d then return list end
+	for itemID in pairs(d.tracked) do
+		local r = ns.Breakdown(d, itemID)
+		if r.total > 0 then
+			tinsert(list, { itemID = itemID, count = r.total, breakdown = r })
+		end
+	end
+	table.sort(list, function(a, b)
+		local na, nb = ItemName(a.itemID), ItemName(b.itemID)
+		if na ~= nb then return na < nb end
+		return a.itemID < b.itemID
+	end)
+	return list
+end
+
+local function Rows(n, min)
+	return math.max(min, math.ceil(n / COLS)) * COLS
+end
+
+function UI.Refresh()
+	if not f:IsShown() or not ns.db then return end
+	local mode = ns.Mode()
+	local d = ns.Data()
+
+	-- header
+	SetTitle(ns.db.banker or ns.TAG)
+	if not d then
+		ageText:SetText("")
+	elseif ns.IsBanker() then
+		ageText:SetText("This character")
+	elseif d.snap.time then
+		ageText:SetText(format("Banker data from %s ago", Age(d.snap.time)))
+	else
+		ageText:SetText("Log in on the banker once to load its data")
+	end
+
+	-- bag grid
+	local entries = TrackedEntries(d)
+	local bagH = bagSlots:Fill(entries, Rows(#entries, MIN_ROWS))
+	bag:SetHeight(bagH)
+	setupText:SetText(mode == "setup" and "Choose your banker and your main characters in the settings." or "")
+
+	-- outgoing section
+	local outH = 0
+	if mode == "send" then
+		local staged = {}
+		for _, s in ipairs(ns.staged) do
+			tinsert(staged, { itemID = s.itemID, link = s.link, count = s.count, staged = s })
+		end
+		local n = ns.MailCount()
+		outLabel:SetText(format("Outgoing to %s", ns.db.banker))
+		outHint:SetText(#staged == 0 and "Drag items here or Alt-click them in your bags"
+			or format("%d item%s, %d mail%s", #staged, #staged == 1 and "" or "s", n, n == 1 and "" or "s"))
+		local gridH = outSlots:Fill(staged, Rows(#staged, 1))
+		outGrid:SetHeight(gridH)
+		out:SetHeight(18 + gridH)
+		out:Show()
+		outH = 10 + 18 + gridH
+	else
+		out:Hide()
+	end
+
+	f:SetHeight(ATTIC + PAD + bagH + outH + PAD + BOTTOM_BAR)
+
+	-- bottom bar
+	local s = d and d.snap
+	if s and s.money then
+		MoneyFrame_Update(money, s.money)
+		MoneyFrame_Update(expected, ns.ExpectedIncome(d))
+		moneyBox:Show()
+	else
+		moneyBox:Hide()
+	end
+
+	action:Hide()
+	clear:Hide()
+	summary:SetText("")
+	action:Enable()
+
+	if mode == "setup" then
+		action:SetText(SETTINGS or "Settings")
+		action:SetScript("OnClick", ns.OpenSettings)
+		action:Show()
+	elseif mode == "send" then
+		local n = ns.MailCount()
+		action:SetScript("OnClick", ns.Send)
+		if ns.IsSending() then
+			action:SetText("Sending...")
+			action:Disable()
+		else
+			action:SetText(n > 0 and format("%s (%d)", SEND_LABEL or "Send", n) or (SEND_LABEL or "Send"))
+			action:SetEnabled(n > 0)
+		end
+		action:Show()
+		clear:SetShown(#ns.staged > 0 and not ns.IsSending())
+	elseif mode == "collect" then
+		local n = ns.CollectableCount()
+		action:SetScript("OnClick", ns.Collect)
+		if ns.IsCollecting() then
+			action:SetText("Collecting...")
+			action:Disable()
+		else
+			action:SetText(format("Collect (%d)", n))
+			action:SetEnabled(n > 0)
+		end
+		action:Show()
+	else
+		summary:SetText(format("%d item%s", #entries, #entries == 1 and "" or "s"))
+	end
+end
+
+ns.Listen(UI.Refresh)
+
+-- Where the window can be attached: next to the mailbox, or to the left of Bagnon's bag window.
+local function DockTarget(dock)
+	if dock == "mail" and MailFrame:IsShown() then
+		return MailFrame, "TOPLEFT", "TOPRIGHT", 40, 0
+	elseif dock == "bagnon" and UI.bagnon and UI.bagnon:IsShown() then
+		return UI.bagnon, "TOPRIGHT", "TOPLEFT", -36, 0
+	end
+end
+
+-- dock: "mail", "bagnon" or nil (free-floating, at the last place the window was dragged to)
+function UI.Show(dock)
+	if not f:IsShown() then
+		f:ClearAllPoints()
+		local target, point, relPoint, x, y = DockTarget(dock)
+		local p = ns.db.ui.point
+		if target then
+			f:SetPoint(point, target, relPoint, x, y)
+		elseif p then
+			f:SetPoint(p[1], UIParent, p[2], p[3], p[4])
+		else
+			f:SetPoint("CENTER")
+		end
+		UI.dock = target and dock or nil
+		f:Show()
+	end
+	-- On a main at the mailbox, switch it to its Send tab, so right-clicking an item in the bags
+	-- means "add to outgoing".
+	if ns.Mode() == "send" and MailFrameTab2 and not (SendMailFrame and SendMailFrame:IsShown()) then
+		MailFrameTab2:Click()
+	end
+	UI.Refresh()
+end
+
+-- At the mailbox, dock to Bagnon's bag window when it's open (Bagnon opens it with the mailbox), else to the mailbox.
+local function MailboxDock()
+	return ns.db.ui.bagnon and UI.bagnon and UI.bagnon:IsShown() and "bagnon" or "mail"
+end
+
+function UI.Toggle(dock)
+	if f:IsShown() then
+		f:Hide()
+	else
+		UI.Show(dock)
+	end
+end
+
+function UI.IsShown()
+	return f:IsShown()
+end
+
+-- Open automatically at the mailbox on the banker and the mains (next frame, once the mailbox and
+-- Bagnon's bag window are shown), unless turned off in the settings.
+ns.On("BA_MAIL_OPENED", function()
+	C_Timer.After(0, function()
+		local mode = ns.Mode()
+		if ns.db.ui.autoOpen and ns.open.mail and (mode == "send" or mode == "collect") then
+			UI.Show(MailboxDock())
+		end
+	end)
+end)
+
+-- A docked window closes together with what it is docked to, like the bags do.
+ns.On("BA_MAIL_CLOSED", function()
+	if UI.dock == "mail" then f:Hide() end
+end)
+
+--[[ Alt-click in bags (Blizzard bags and Bagnon) adds the item to the outgoing list ]]--
+
+hooksecurefunc("HandleModifiedItemClick", function(link, itemLocation)
+	if not ns.db or not link or not IsAltKeyDown() or IsShiftKeyDown() or IsControlKeyDown() then return end
+	if ns.Mode() ~= "send" then return end
+	if GetMouseButtonClicked and GetMouseButtonClicked() ~= "LeftButton" then return end
+
+	local bagID, slot
+	local focus = GetMouseFoci and GetMouseFoci()[1] or GetMouseFocus and GetMouseFocus()
+	if focus and type(focus.bag) == "number" and focus.GetID then -- Bagnon item button
+		bagID, slot = focus.bag, focus:GetID()
+	elseif itemLocation and itemLocation.IsBagAndSlot and itemLocation:IsBagAndSlot() then
+		bagID, slot = itemLocation:GetBagAndSlot()
+	end
+
+	if bagID and C_Container.GetContainerItemLink(bagID, slot) == link and ns.Stage(bagID, slot) then
+		UI.Show(MailboxDock())
+	end
+end)
+
+--[[ Side tabs (spellbook-style) on the mailbox and on Bagnon's bag window ]]--
+
+-- side "right": the tab sticks out of the parent's right edge; "left": out of its left edge (mirrored art)
+local function CreateSideTab(name, parent, side, dock)
+	local b = CreateFrame("Button", name, parent)
+	b:SetSize(32, 32)
+
+	local bg = b:CreateTexture(nil, "BACKGROUND")
+	bg:SetTexture("Interface\\SpellBook\\SpellBook-SkillLineTab")
+	bg:SetSize(64, 64)
+	if side == "right" then
+		b:SetPoint("TOPLEFT", parent, "TOPRIGHT", 0, -50)
+		bg:SetPoint("TOPLEFT", -3, 11)
+	else
+		b:SetPoint("TOPRIGHT", parent, "TOPLEFT", 0, -50)
+		bg:SetPoint("TOPRIGHT", 3, 11)
+		bg:SetTexCoord(1, 0, 0, 1)
+	end
+
+	b:SetNormalTexture(ns.ICON)
+	b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+	b:SetScript("OnClick", function() UI.Toggle(dock) end)
+	b:SetScript("OnEnter", function(self) UI.ShowButtonTip(self, side == "right" and "ANCHOR_RIGHT" or "ANCHOR_LEFT") end)
+	b:SetScript("OnLeave", GameTooltip_Hide)
+	return b
+end
+
+function UI.ShowButtonTip(owner, anchor)
+	GameTooltip:SetOwner(owner, anchor)
+	GameTooltip:SetText(ns.TAG)
+	GameTooltip:AddLine(ns.db.banker and ("Virtual bag of " .. ns.db.banker) or "Not set up yet", 1, 1, 1)
+	GameTooltip:Show()
+end
+
+--[[ Bagnon (optional) ]]--
+-- A BankiAlt button in the row of buttons at the top of Bagnon's bag window (next to the character
+-- selector, bag toggle, sort and search), built from Bagnon's own button template. It opens the virtual
+-- bag docked to Bagnon's window. Falls back to a side tab if Bagnon's layout ever changes.
+
+local function AddBagnonButton(frame)
+	if not (frame.GetExtraButtons and frame.Layout) then return false end
+	local ok, b = pcall(CreateFrame, "Button", "BankiAltBagnonButton", frame, "BagnonButtonTemplate")
+	if not ok or not b.Icon then return false end
+
+	b.Icon:SetTexture(ns.ICON)
+	b:SetScript("OnClick", function() UI.Toggle("bagnon") end)
+	b:SetScript("OnEnter", function(self) UI.ShowButtonTip(self, "ANCHOR_TOP") end)
+	b:SetScript("OnLeave", GameTooltip_Hide)
+
+	local GetExtraButtons = frame.GetExtraButtons
+	frame.GetExtraButtons = function(self)
+		local list = {}
+		for _, button in ipairs(GetExtraButtons(self)) do tinsert(list, button) end
+		if ns.db.ui.bagnon then tinsert(list, b) else b:Hide() end
+		return list
+	end
+	frame:Layout()
+	return true
+end
+
+local function AttachToBagnon()
+	if UI.bagnon then return end
+	local frame = Bagnon.Frames:Get("inventory")
+	if not (frame and frame[0]) then return end -- Bagnon hasn't built its bag window yet
+
+	UI.bagnon = frame
+	if not AddBagnonButton(frame) then
+		UI.bagnonTab = CreateSideTab("BankiAltBagnonTab", frame, "left", "bagnon")
+		UI.bagnonTab:SetShown(ns.db.ui.bagnon)
+	end
+	frame:HookScript("OnHide", function()
+		if UI.dock == "bagnon" then f:Hide() end
+	end)
+end
+
+local function HookBagnon()
+	local frames = Bagnon and Bagnon.Frames
+	if not (frames and frames.Get and frames.Show) then return end -- not installed, or its layout changed
+	hooksecurefunc(frames, "Show", function(_, id)
+		if id == "inventory" then AttachToBagnon() end
+	end)
+	AttachToBagnon()
+end
+
+--[[ Grey out queued items in the bags, like the mailbox does with attached ones ]]--
+
+hooksecurefunc("SetItemButtonDesaturated", function(button, desaturated)
+	if desaturated or #ns.staged == 0 or not button.GetID then return end
+	local bag = type(button.bag) == "number" and button.bag -- Bagnon
+	if not bag and button.GetBagID then                     -- Blizzard bags
+		local ok, id = pcall(button.GetBagID, button)
+		bag = ok and type(id) == "number" and id
+	end
+	if bag and ns.IsStaged(bag, button:GetID()) then
+		local icon = GetItemButtonIconTexture and GetItemButtonIconTexture(button) or button.icon or button.Icon
+		if icon then icon:SetDesaturated(true) end
+	end
+end)
+
+ns.On("BA_STAGED", function()
+	local frames = Bagnon and Bagnon.Frames
+	if frames and frames.Update then frames:Update() end -- redraw Bagnon's items
+end)
+
+--[[ Minimap button ]]--
+
+local function CreateMinimapButton()
+	local b = CreateFrame("Button", "BankiAltMinimapButton", Minimap)
+	b:SetSize(31, 31)
+	b:SetFrameStrata("MEDIUM")
+	b:SetFrameLevel(8)
+	b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	b:RegisterForDrag("LeftButton")
+	b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+	local overlay = b:CreateTexture(nil, "OVERLAY")
+	overlay:SetSize(53, 53)
+	overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+	overlay:SetPoint("TOPLEFT")
+
+	local bg = b:CreateTexture(nil, "BACKGROUND")
+	bg:SetSize(20, 20)
+	bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+	bg:SetPoint("TOPLEFT", 7, -5)
+
+	local icon = b:CreateTexture(nil, "ARTWORK")
+	icon:SetSize(17, 17)
+	icon:SetTexture(ns.ICON)
+	icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+	icon:SetPoint("TOPLEFT", 7, -6)
+
+	local function Place()
+		local a = math.rad(ns.db.ui.minimapAngle or 200)
+		local r = Minimap:GetWidth() / 2 + 5
+		b:ClearAllPoints()
+		b:SetPoint("CENTER", Minimap, "CENTER", math.cos(a) * r, math.sin(a) * r)
+	end
+
+	b:SetScript("OnDragStart", function(self)
+		self:SetScript("OnUpdate", function()
+			local mx, my = Minimap:GetCenter()
+			local cx, cy = GetCursorPosition()
+			local scale = Minimap:GetEffectiveScale()
+			ns.db.ui.minimapAngle = math.deg(math.atan2(cy / scale - my, cx / scale - mx))
+			Place()
+		end)
+	end)
+	b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+	b:SetScript("OnClick", function(_, button)
+		if button == "RightButton" then ns.OpenSettings() else UI.Toggle() end
+	end)
+	b:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+		GameTooltip:SetText(ns.TAG)
+		GameTooltip:AddLine("Left-click: open the virtual bag", 1, 1, 1)
+		GameTooltip:AddLine("Right-click: settings", 1, 1, 1)
+		GameTooltip:AddLine("Drag: move this button", 1, 1, 1)
+		GameTooltip:Show()
+	end)
+	b:SetScript("OnLeave", GameTooltip_Hide)
+
+	Place()
+	UI.minimap = b
+end
+
+-- Show the icons the settings ask for.
+local function ApplyOptions()
+	local ui = ns.db.ui
+	if UI.mailTab then UI.mailTab:SetShown(ui.mailTab) end
+	if UI.minimap then UI.minimap:SetShown(ui.minimap) end
+	if UI.bagnonTab then UI.bagnonTab:SetShown(ui.bagnon) end
+	if UI.bagnon and not UI.bagnonTab then UI.bagnon:Layout() end -- re-reads GetExtraButtons
+end
+
+ns.On("BA_OPTIONS", ApplyOptions)
+
+ns.On("PLAYER_LOGIN", function()
+	UI.mailTab = CreateSideTab("BankiAltMailTab", MailFrame, "right", "mail")
+	CreateMinimapButton()
+	HookBagnon()
+	ApplyOptions()
+end)
