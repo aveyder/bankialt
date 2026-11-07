@@ -227,6 +227,8 @@ local function ScanInbox()
 				if itemID then
 					ReducePosted(s, itemID, notice.count * new)
 					if notice.sold then Remove(d, itemID, notice.count * new) end
+				else
+					notice.n = notice.n - new -- item info not loaded yet: count it on a later scan
 				end
 			end
 		end
@@ -347,6 +349,14 @@ end)
 
 ns.On("MAIL_SEND_SUCCESS", OnBanker(OnMailSent))
 ns.On("MAIL_FAILED", function() outgoing = nil end)
+
+-- A sale notice may have waited for its item's info: scan the inbox again once it arrives.
+ns.On("GET_ITEM_INFO_RECEIVED", function()
+	if ns.db and ns.db.banker and ns.open.mail and ns.IsBanker() then
+		ScanInbox()
+		ns.Changed()
+	end
+end)
 
 hooksecurefunc("DeleteCursorItem", function() destroyedAt = GetTime() end)
 

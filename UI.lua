@@ -76,21 +76,6 @@ local setupText = f.Inset:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 setupText:SetPoint("CENTER", bag)
 setupText:SetWidth(GRID_W - 40)
 
--- Outgoing section (main at mailbox)
-local out = CreateFrame("Frame", nil, f.Inset)
-out:SetPoint("TOPLEFT", bag, "BOTTOMLEFT", 0, -10)
-out:SetWidth(GRID_W)
-
-local outLabel = out:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-outLabel:SetPoint("TOPLEFT")
-
-local outHint = out:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-outHint:SetPoint("TOPRIGHT")
-
-local outGrid = CreateFrame("Frame", nil, out)
-outGrid:SetPoint("TOPLEFT", 0, -18)
-outGrid:SetWidth(GRID_W)
-
 -- Bottom bar: action buttons or summary on the left; the banker's money on the right in two rows
 f.Inset:SetPoint("BOTTOMRIGHT", -6, BOTTOM_BAR)
 
@@ -103,6 +88,23 @@ clear:SetSize(80, 22)
 clear:SetPoint("LEFT", action, "RIGHT", 2, 0)
 clear:SetText(CLEAR_ALL or "Clear")
 clear:SetScript("OnClick", ns.ClearStaged)
+
+-- The Send button explains what it will send (also while disabled, when nothing is added yet).
+if action.SetMotionScriptsWhileDisabled then action:SetMotionScriptsWhileDisabled(true) end
+action:SetScript("OnEnter", function(self)
+	if ns.Mode() ~= "send" then return end
+	GameTooltip:SetOwner(self, "ANCHOR_TOP")
+	local items, mails = #ns.staged, ns.MailCount()
+	if items == 0 then
+		GameTooltip:SetText("Nothing to send yet")
+		GameTooltip:AddLine("Drag items into the bag or Alt-click them in your bags.", 1, 1, 1, true)
+	else
+		GameTooltip:SetText(format("Send to %s", ns.db.banker))
+		GameTooltip:AddLine(format("%d item%s in %d mail%s", items, items == 1 and "" or "s", mails, mails == 1 and "" or "s"), 1, 1, 1)
+	end
+	GameTooltip:Show()
+end)
+action:SetScript("OnLeave", GameTooltip_Hide)
 
 local summary = f:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
 summary:SetPoint("BOTTOMLEFT", 12, 17)
@@ -182,7 +184,10 @@ local function SlotOnEnter(self)
 
 	local r = self.breakdown
 	GameTooltip:AddLine(" ")
-	if r then
+	if self.staged then
+		GameTooltip:AddLine(format("Will be mailed to %s when you press Send.", ns.db.banker), 0.4, 0.78, 1, true)
+		GameTooltip:AddLine("Click to take it back. Right-click to take it off the list.", 0.6, 0.6, 0.6, true)
+	elseif r then
 		GameTooltip:AddDoubleLine(ns.db.banker, r.total, NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b, 1, 1, 1)
 		for _, key in ipairs(ns.STATUSES) do
 			if r[key] then
@@ -192,10 +197,21 @@ local function SlotOnEnter(self)
 			end
 		end
 		GameTooltip:AddLine("Right-click to remove it from the virtual bag.", 0.6, 0.6, 0.6)
-	else
-		GameTooltip:AddLine("Right-click to take it off the outgoing list.", 0.6, 0.6, 0.6)
 	end
 	GameTooltip:Show()
+end
+
+-- Items added this session are still in your bags: picking one up puts the real item on the cursor.
+-- Everything else is with the banker (or on its way) and can't be taken out.
+local function PickUp(self)
+	if self.staged then
+		if ns.IsSending() then return end
+		local s = self.staged
+		ns.Unstage(s)
+		C_Container.PickupContainerItem(s.bag, s.slot)
+	elseif self.itemID then
+		UIErrorsFrame:AddMessage(format("That item is with %s.", ns.db.banker or "your banker"), 1, 0.1, 0.1, 1)
+	end
 end
 
 local function SlotOnClick(self, button)
@@ -212,6 +228,8 @@ local function SlotOnClick(self, button)
 		else
 			StaticPopup_Show("BANKIALT_FORGET", link or ("item " .. self.itemID), nil, self.itemID)
 		end
+	else
+		PickUp(self)
 	end
 end
 
@@ -226,6 +244,8 @@ local function NewPool(parent)
 		b:SetSize(SIZE, SIZE)
 		b:SetPoint("TOPLEFT", ((i - 1) % COLS) * (SIZE + GAP), -math.floor((i - 1) / COLS) * (SIZE + GAP))
 		b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+		b:RegisterForDrag("LeftButton")
+		b:SetScript("OnDragStart", PickUp)
 		b:SetScript("OnEnter", SlotOnEnter)
 		b:SetScript("OnLeave", GameTooltip_Hide)
 		b:SetScript("OnClick", SlotOnClick)
@@ -250,6 +270,7 @@ local function NewPool(parent)
 				SetItemButtonCount(b, 0)
 				SetItemButtonQuality(b, nil)
 			end
+			SetItemButtonDesaturated(b, e and e.dim or false)
 			local r = e and e.breakdown
 			local flag = r and Flag(r)
 			b.flag:SetTexture(flag or nil)
@@ -263,7 +284,6 @@ local function NewPool(parent)
 end
 
 local bagSlots = NewPool(bag)
-local outSlots = NewPool(outGrid)
 
 --[[ Refresh ]]--
 
@@ -313,33 +333,24 @@ function UI.Refresh()
 		ageText:SetText("Log in on the banker once to load its data")
 	end
 
-	-- bag grid
+	-- bag grid: at the mailbox, what was already sent is greyed out and the items added this session
+	-- follow in color, in the order they were added
 	local entries = TrackedEntries(d)
-	local bagH = bagSlots:Fill(entries, Rows(#entries, MIN_ROWS))
+	local slots = {}
+	for _, e in ipairs(entries) do
+		e.dim = mode == "send"
+		tinsert(slots, e)
+	end
+	if mode == "send" then
+		for _, s in ipairs(ns.staged) do
+			tinsert(slots, { itemID = s.itemID, link = s.link, count = s.count, staged = s })
+		end
+	end
+	local bagH = bagSlots:Fill(slots, Rows(#slots, MIN_ROWS))
 	bag:SetHeight(bagH)
 	setupText:SetText(mode == "setup" and "Choose your banker and your main characters in the settings." or "")
 
-	-- outgoing section
-	local outH = 0
-	if mode == "send" then
-		local staged = {}
-		for _, s in ipairs(ns.staged) do
-			tinsert(staged, { itemID = s.itemID, link = s.link, count = s.count, staged = s })
-		end
-		local n = ns.MailCount()
-		outLabel:SetText(format("Outgoing to %s", ns.db.banker))
-		outHint:SetText(#staged == 0 and "Drag items here or Alt-click them in your bags"
-			or format("%d item%s, %d mail%s", #staged, #staged == 1 and "" or "s", n, n == 1 and "" or "s"))
-		local gridH = outSlots:Fill(staged, Rows(#staged, 1))
-		outGrid:SetHeight(gridH)
-		out:SetHeight(18 + gridH)
-		out:Show()
-		outH = 10 + 18 + gridH
-	else
-		out:Hide()
-	end
-
-	f:SetHeight(ATTIC + PAD + bagH + outH + PAD + BOTTOM_BAR)
+	f:SetHeight(ATTIC + PAD + bagH + PAD + BOTTOM_BAR)
 
 	-- bottom bar
 	local s = d and d.snap
@@ -414,11 +425,6 @@ function UI.Show(dock)
 		end
 		UI.dock = target and dock or nil
 		f:Show()
-	end
-	-- On a main at the mailbox, switch it to its Send tab, so right-clicking an item in the bags
-	-- means "add to outgoing".
-	if ns.Mode() == "send" and MailFrameTab2 and not (SendMailFrame and SendMailFrame:IsShown()) then
-		MailFrameTab2:Click()
 	end
 	UI.Refresh()
 end

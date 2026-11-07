@@ -6,7 +6,7 @@ Stop the mailbox grind: typing the alt's name, dragging items one by one, 12 per
 
 ## Why you'll love it
 
-- 📬 **Bulk mail in one click.** Right-click everything you want to stash and hit **Send**. BankiAlt splits it into as many mails as needed and closes the mailbox when it's done.
+- 📬 **Bulk mail in one click.** Alt-click or drag everything you want to stash (or right-click it on the Send tab) and hit **Send**. BankiAlt splits it into as many mails as needed.
 - 🎒 **A bag for your banker.** See everything you've sent, from any of your characters, even far from a mailbox.
 - 🔎 **Know where every item is.** In flight, waiting in the mailbox, on the auction house, back from the AH, or mailed back to you. Each item gets a small status icon in its slot.
 - 💰 **Gold at a glance.** The banker's current gold, plus what its running auctions should bring in.

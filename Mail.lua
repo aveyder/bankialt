@@ -44,10 +44,6 @@ function ns.ClearStaged()
 	StagedChanged()
 end
 
-local function CloseMailbox()
-	if MailFrame:IsShown() then HideUIPanel(MailFrame) end
-end
-
 --[[ Sending ]]--
 
 local S = { active = false }
@@ -113,7 +109,6 @@ function NextMail()
 	local chunk = S.chunks[S.index]
 	if not chunk then
 		Finish(format("Sent %d mail(s) to %s.", S.sent, ns.db.banker))
-		if S.sent > 0 then CloseMailbox() end -- all done: off to the next journey
 		return
 	end
 	if not ns.open.mail then
@@ -207,8 +202,9 @@ ns.On("BAG_UPDATE_DELAYED", function()
 	if removed then StagedChanged() else ns.Changed() end
 end)
 
--- Right-click in the bags while the virtual bag is open at the mailbox: add to the outgoing list
+-- Right-click in the bags while the virtual bag is open on the mailbox's Send tab: add to the outgoing list
 -- instead of attaching to the Blizzard send-mail form. The game attaches the item first; take it off again.
+-- On the Inbox tab a right-click uses the item (equips, eats...), so it is left alone there.
 local undo, undoTimer = 0, nil
 
 local function UndoAttachments()
@@ -230,6 +226,7 @@ end
 
 hooksecurefunc(C_Container, "UseContainerItem", function(bag, slot)
 	if not ns.db or ns.Mode() ~= "send" or S.active or not ns.UI.IsShown() then return end
+	if not (SendMailFrame and SendMailFrame:IsShown()) then return end
 	if ns.Stage(bag, slot) then
 		undo = undo + 1
 		if undoTimer then undoTimer:Cancel() end
@@ -288,7 +285,6 @@ local function CollectStep()
 		end
 	end
 	StopCollect("Collected everything from your main characters.")
-	CloseMailbox()
 end
 
 function ns.Collect()
