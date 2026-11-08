@@ -214,8 +214,9 @@ local function Debug()
 	local d = ns.Data()
 	if d then
 		for _, p in ipairs(d.snap.posted) do
-			print(format("  posted: item %d x%d, %s, ends by %s", p.itemID, p.qty,
-				p.confirmed and "confirmed" or "NOT confirmed", date("%d.%m %H:%M", p.expires)))
+			print(format("  posted: item %d x%d, %s, ends by %s%s", p.itemID, p.qty,
+				p.confirmed and "confirmed" or "NOT confirmed", date("%d.%m %H:%M", p.expires),
+				ns.IsExpired(p) and " (EXPIRED, no AH mail seen)" or ""))
 		end
 		for _, r in pairs(d.returns) do
 			for itemID, c in pairs(r.items) do

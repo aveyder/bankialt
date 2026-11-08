@@ -2,11 +2,14 @@ local ADDON, ns = ...
 
 -- Keeps the virtual bag up to date with explicit rules. An item only leaves the virtual bag when we
 -- know why:
---   sold to a vendor / destroyed / mailed to someone who isn't a main / AH sale notice  -> removed
+--   sold to a vendor / destroyed / mailed to someone who isn't a main   -> removed
 --   mailed back to a main                       -> "sent back" until that main takes the mail, then removed
---   posted on the AH and the server confirmed   -> "on the AH"
---   sent back by the AH (expired or cancelled)  -> "returned" while it waits in the banker's mailbox
+--   posted on the AH and the server confirmed   -> moved out of the bag into the AH balance (snap.posted)
 --   left the banker's bags any other way        -> "?" (unknown), until removed by hand
+-- The AH balance:
+--   AH sale notice                              -> removed from the AH balance
+--   sent back by the AH (expired or cancelled)  -> moved back into the bag, "returned" while it waits in the mailbox
+--   auction time passed with no notice          -> kept, shown as expired, until a notice or removed by hand
 
 local GetItemInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
 local MAX_SEND = ATTACHMENTS_MAX_SEND or 12
@@ -40,8 +43,9 @@ local function Remove(d, itemID, n)
 	d.tracked[itemID] = left > 0 and left or nil
 end
 
+-- Takes up to n of an item off the AH balance, oldest auctions first. Returns how many were taken.
 local function ReducePosted(s, itemID, n)
-	local i = 1
+	local want, i = n, 1
 	while n > 0 and i <= #s.posted do
 		local p = s.posted[i]
 		if p.itemID == itemID then
@@ -52,6 +56,7 @@ local function ReducePosted(s, itemID, n)
 			i = i + 1
 		end
 	end
+	return want - n
 end
 
 -- The main a mail recipient refers to ("Kinsinar Rybkin", or just "Kinsinar").
@@ -100,9 +105,6 @@ local function ScanOwned()
 		s.bank = bank
 		s.bankTime = time()
 	end
-	for i = #s.posted, 1, -1 do -- past the longest auction time without news: "?"
-		if s.posted[i].expires < time() then tremove(s.posted, i) end
-	end
 	s.time = time()
 end
 
@@ -115,7 +117,7 @@ end
 
 --[[ Banker: auction house ]]--
 -- Posts are seen through C_AuctionHouse.PostItem/PostCommodity (used by the Blizzard UI and Auctionator),
--- which also gives the price. They count as "on the AH" once the server confirms them.
+-- which also gives the price. They move from the bag to the AH balance once the server confirms them.
 
 local pendingPosts = {}
 
@@ -139,14 +141,17 @@ if C_AuctionHouse then
 	end)
 end
 
--- The server confirmed an auction: the oldest post still waiting becomes "on the AH".
+-- The server confirmed an auction: the oldest post still waiting moves from the bag to the AH balance.
 local function ConfirmPost()
 	while pendingPosts[1] and GetTime() - pendingPosts[1].at > 60 do
 		tremove(pendingPosts, 1) -- never answered: its items will show as "?"
 	end
 	local p = tremove(pendingPosts, 1)
-	if p then
-		tinsert(ns.Data().snap.posted, { itemID = p.itemID, qty = p.qty, unit = p.unit,
+	local d = p and ns.Data()
+	local n = d and math.min(p.qty, d.tracked[p.itemID] or 0)
+	if n and n > 0 then
+		Remove(d, p.itemID, n)
+		tinsert(d.snap.posted, { itemID = p.itemID, qty = n, unit = p.unit,
 			expires = time() + p.hours * 3600, confirmed = true })
 	end
 end
@@ -166,10 +171,15 @@ local function IsAuctionReturn(subject)
 	end
 end
 
-local function TrackedByName(d, name)
-	for itemID in pairs(d.tracked) do
-		if GetItemInfo(itemID) == name then return itemID end
+-- The AH entry's item a sale notice names. Second result: some entry's item info isn't loaded yet, try again later.
+local function PostedByName(s, name)
+	local waiting = false
+	for _, p in ipairs(s.posted) do
+		local itemName = GetItemInfo(p.itemID)
+		if itemName == name then return p.itemID end
+		if not itemName then waiting = true end
 	end
+	return nil, waiting
 end
 
 local function ScanInbox()
@@ -219,15 +229,17 @@ local function ScanInbox()
 		for id, mail in pairs(d.mails) do
 			if mail.seen and not present[id] then d.mails[id] = nil end
 		end
-		-- AH notices that are new since last time: a sale removes the item, a return ends its auction
+		-- AH notices that are new since last time: a sale takes the items off the AH balance, a return also
+		-- puts what it took off back into the bag (so the banker's own, untracked auctions are never added)
 		for key, notice in pairs(notices) do
 			local new = notice.n - (s.inboxKeys[key] or 0)
 			if new > 0 then
-				local itemID = notice.itemID or TrackedByName(d, notice.name)
+				local itemID, waiting = notice.itemID, false
+				if not itemID then itemID, waiting = PostedByName(s, notice.name) end
 				if itemID then
-					ReducePosted(s, itemID, notice.count * new)
-					if notice.sold then Remove(d, itemID, notice.count * new) end
-				else
+					local back = ReducePosted(s, itemID, notice.count * new)
+					if not notice.sold and back > 0 then d.tracked[itemID] = (d.tracked[itemID] or 0) + back end
+				elseif waiting then
 					notice.n = notice.n - new -- item info not loaded yet: count it on a later scan
 				end
 			end

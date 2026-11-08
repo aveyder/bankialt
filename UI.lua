@@ -18,14 +18,13 @@ local STATUS = {
 	flight   = { "In flight",                        0.40, 0.78, 1.00, "Interface\\Minimap\\Tracking\\Mailbox" },
 	mailbox  = { "In the banker's mailbox",          1.00, 0.82, 0.00, "Interface\\Minimap\\Tracking\\Mailbox" },
 	returned = { "Returned by the AH, in mailbox",   1.00, 0.60, 0.20, "Interface\\Buttons\\UI-RefreshButton" },
-	auction  = { "On the auction house",             1.00, 0.82, 0.00, "Interface\\Minimap\\Tracking\\Auctioneer" },
 	toMain   = { "Sent back to a main",              0.40, 1.00, 0.40, "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up" },
 	owned    = { "With the banker",                  1.00, 1.00, 1.00 },
 	unknown  = { "Unknown: left the banker's bags",  0.60, 0.60, 0.60, "Interface\\RaidFrame\\ReadyCheck-Waiting" },
 }
 
 -- One corner icon per slot: the status that most needs attention wins.
-local FLAG_ORDER = { "unknown", "returned", "toMain", "flight", "mailbox", "auction" }
+local FLAG_ORDER = { "unknown", "returned", "toMain", "flight", "mailbox" }
 
 local function Flag(r)
 	for _, key in ipairs(FLAG_ORDER) do
@@ -123,20 +122,127 @@ local function MoneyRow(name, label, y)
 end
 
 local money = MoneyRow("BankiAltFrameMoney", "Current:", 24)
-local expected, expectedLabel = MoneyRow("BankiAltFrameExpected", "Expected:", 7)
+local expected, expectedLabel = MoneyRow("BankiAltFrameExpected", "Auctions:", 7)
 
--- explain the second row on hover
+--[[ The AH balance: the "Auctions" row lists the banker's auctions on hover ]]--
+
+local MAX_AUCTION_ROWS = 15
+
+local MoneyText = GetMoneyString or GetCoinTextureString
+
+-- an orange "!" after the amount while an auction is past its time with no mail from the AH seen
+local stuckMark = moneyBox:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+stuckMark:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -6, 9)
+stuckMark:SetText("|cffff8000!|r")
+
+local function HasExpired(d)
+	for _, p in ipairs(d.snap.posted) do
+		if ns.IsExpired(p) then return true end
+	end
+	return false
+end
+
+-- running auctions first (ending soonest on top), then the expired ones
+local function SortedAuctions(d)
+	local list = {}
+	for _, p in ipairs(d.snap.posted) do tinsert(list, p) end
+	table.sort(list, function(a, b)
+		local ea, eb = ns.IsExpired(a), ns.IsExpired(b)
+		if ea ~= eb then return eb end
+		return a.expires < b.expires
+	end)
+	return list
+end
+
+local function AuctionLabel(p)
+	return format("|T%s:14|t %s x%d", GetItemIcon(p.itemID) or "", GetItemInfo(p.itemID) or ("item " .. p.itemID), p.qty)
+end
+
 local expectedHit = CreateFrame("Frame", nil, moneyBox)
 expectedHit:SetPoint("TOPLEFT", expectedLabel, -2, 2)
-expectedHit:SetPoint("BOTTOMRIGHT", expectedLabel, 2, -2)
+expectedHit:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -2, 5)
+expectedHit:SetFrameLevel(expected:GetFrameLevel() + 5) -- above the coins, so they don't take the mouse
+expectedHit:EnableMouse(true)
+
 expectedHit:SetScript("OnEnter", function(self)
+	local d = ns.Data()
+	if not d then return end
 	GameTooltip:SetOwner(self, "ANCHOR_TOP")
-	GameTooltip:SetText("Expected income")
-	GameTooltip:AddLine("Running auctions, minus the auction house's 5% cut, plus sale gold waiting in the banker's mailbox.", 1, 1, 1, true)
-	GameTooltip:AddLine("It goes down when items come back from the AH or the gold is taken, which then counts as current money.", 0.8, 0.8, 0.8, true)
+	GameTooltip:AddDoubleLine("On the auction house", MoneyText(ns.ExpectedIncome(d)),
+		NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b, 1, 1, 1)
+	local list = SortedAuctions(d)
+	for i, p in ipairs(list) do
+		if i > MAX_AUCTION_ROWS then
+			GameTooltip:AddLine(format("and %d more", #list - MAX_AUCTION_ROWS), 0.6, 0.6, 0.6)
+			break
+		end
+		local left = ns.IsExpired(p) and "|cff808080expired|r" or SecondsToTime(p.expires - time(), true, false, 1)
+		GameTooltip:AddDoubleLine(AuctionLabel(p), format("%s  %s", MoneyText(math.floor(ns.AuctionWorth(p))), left), 1, 1, 1, 1, 1, 1)
+	end
+	local sale = d.snap.saleMoney or 0
+	if sale > 0 then
+		GameTooltip:AddDoubleLine("Sale gold in the mailbox", MoneyText(sale), 1, 1, 1, 1, 1, 1)
+	end
+	if HasExpired(d) then
+		GameTooltip:AddLine("Expired: past its time, but the AH's mail hasn't been seen.", 0.6, 0.6, 0.6, true)
+		GameTooltip:AddLine("Right-click: remove expired auctions", 0.6, 0.6, 0.6)
+	end
 	GameTooltip:Show()
 end)
 expectedHit:SetScript("OnLeave", GameTooltip_Hide)
+
+-- Right-click: settle each expired auction by hand: it sold (drop it), or it came back (back into the bag).
+local SOLD, BACK = "It sold", "It came back"
+local easyMenuFrame
+
+local function ShowAuctionMenu(owner)
+	local d = ns.Data()
+	if not d then return end
+	local expired = {}
+	for _, p in ipairs(SortedAuctions(d)) do
+		if ns.IsExpired(p) then tinsert(expired, p) end
+	end
+	if #expired == 0 then return end
+	GameTooltip:Hide()
+
+	if MenuUtil and MenuUtil.CreateContextMenu then
+		MenuUtil.CreateContextMenu(owner, function(_, root)
+			root:CreateTitle("Expired auctions")
+			for _, p in ipairs(expired) do
+				local entry = root:CreateButton(AuctionLabel(p))
+				entry:CreateButton(SOLD, function() ns.DropAuction(p, false) end)
+				entry:CreateButton(BACK, function() ns.DropAuction(p, true) end)
+			end
+		end)
+	elseif EasyMenu then
+		local list = { { text = "Expired auctions", isTitle = true, notCheckable = true } }
+		for _, p in ipairs(expired) do
+			tinsert(list, { text = AuctionLabel(p), hasArrow = true, notCheckable = true, menuList = {
+				{ text = SOLD, notCheckable = true, func = function() ns.DropAuction(p, false) CloseDropDownMenus() end },
+				{ text = BACK, notCheckable = true, func = function() ns.DropAuction(p, true) CloseDropDownMenus() end },
+			} })
+		end
+		easyMenuFrame = easyMenuFrame or CreateFrame("Frame", "BankiAltAuctionMenu", UIParent, "UIDropDownMenuTemplate")
+		EasyMenu(list, easyMenuFrame, "cursor", 0, 0, "MENU")
+	end
+end
+
+expectedHit:SetScript("OnMouseUp", function(self, button)
+	if button == "RightButton" then ShowAuctionMenu(self) end
+end)
+
+-- The row is shown while there are AH entries or sale gold; the "!" while an entry is expired.
+local function UpdateAuctionsRow(d)
+	local s = d.snap
+	local shown = #s.posted > 0 or (s.saleMoney or 0) > 0
+	local stuck = shown and HasExpired(d)
+	MoneyFrame_Update(expected, ns.ExpectedIncome(d))
+	expected:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", stuck and -14 or -2, 7)
+	expected:SetShown(shown)
+	expectedLabel:SetShown(shown)
+	expectedHit:SetShown(shown)
+	stuckMark:SetShown(stuck)
+end
 
 --[[ Dropping items ]]--
 
@@ -358,7 +464,7 @@ function UI.Refresh()
 	local s = d and d.snap
 	if s and s.money then
 		MoneyFrame_Update(money, s.money)
-		MoneyFrame_Update(expected, ns.ExpectedIncome(d))
+		UpdateAuctionsRow(d)
 		moneyBox:Show()
 	else
 		moneyBox:Hide()

@@ -107,20 +107,36 @@ end
 
 --[[ Data ]]--
 -- Everything is kept per banker name, so changing the banker never mixes two ledgers.
---   tracked[itemID] = count                 items the mains sent that are still in the virtual bag
+--   tracked[itemID] = count                 items the mains sent that are still in the virtual bag (not on the AH)
 --   mails[id]       = {sender, sent, seen, items = {[itemID] = count}}   tagged mails not yet emptied by the banker
 --   snap            = last known banker state: bags, bank, money, posted, returned, *Time
+
+local DATA_VERSION = 3
+
+-- Version 3: items on the AH are no longer part of the bag, they are only in snap.posted.
+local function Migrate(d)
+	if (d.version or 0) < 3 then
+		for _, p in ipairs(d.snap.posted or {}) do
+			local left = (d.tracked[p.itemID] or 0) - p.qty
+			d.tracked[p.itemID] = left > 0 and left or nil
+		end
+		d.snap.auctions, d.snap.auctionsTime, d.snap.mail, d.snap.invoices = nil, nil, nil, nil
+	end
+	d.version = DATA_VERSION
+end
 
 function ns.Data()
 	local key = ns.NameKey(ns.db.banker)
 	if not key then return nil end
 	local d = ns.db.data[key]
 	if not d then
-		d = { tracked = {}, mails = {}, snap = { bags = {}, bank = {} } }
+		d = { version = DATA_VERSION, tracked = {}, mails = {}, snap = { bags = {}, bank = {} } }
 		ns.db.data[key] = d
 	end
+	if d.version ~= DATA_VERSION then Migrate(d) end
 	-- returns:   items the banker mailed back to a main: [id] = {to, items, sent, seen}
-	-- posted:    items that left the banker's bags at the AH: {itemID, qty, expires, confirmed}
+	-- posted:    the AH balance, the banker's running auctions of bag items: {itemID, qty, unit, expires, confirmed}
+	--            kept after `expires` (shown as expired) until the AH's mail about it is seen or it's removed by hand
 	-- returned:  items the AH sent back (expired/cancelled) waiting in the banker's mailbox
 	-- inboxKeys: AH notices seen last time, so a notice that stays in the mailbox counts only once
 	d.returns = d.returns or {}
@@ -138,7 +154,7 @@ function ns.ItemIDFromLink(link)
 	return link and tonumber(link:match("item:(%d+)"))
 end
 
--- Manual cleanup: stop tracking an item entirely.
+-- Manual cleanup: stop tracking an item entirely (the AH balance is left alone).
 function ns.Forget(itemID)
 	local d = ns.Data()
 	if not d then return end
@@ -149,29 +165,50 @@ function ns.Forget(itemID)
 			if not next(mail.items) then list[id] = nil end
 		end
 	end
-	for i = #d.snap.posted, 1, -1 do
-		if d.snap.posted[i].itemID == itemID then tremove(d.snap.posted, i) end
-	end
 	ns.Changed()
+end
+
+-- An auction past its time whose mail never showed up.
+function ns.IsExpired(p)
+	return p.expires <= time()
+end
+
+-- Manual cleanup of one AH entry: it sold, or it came back (its items go back into the bag).
+function ns.DropAuction(entry, cameBack)
+	local d = ns.Data()
+	if not d then return end
+	for i, p in ipairs(d.snap.posted) do
+		if p == entry then
+			tremove(d.snap.posted, i)
+			if cameBack then d.tracked[p.itemID] = (d.tracked[p.itemID] or 0) + p.qty end
+			ns.Changed()
+			return
+		end
+	end
 end
 
 -- Gold the banker can still expect: running auctions (after the AH's cut) plus sale gold in its mailbox.
 -- Drops as items come back from the AH or the gold is taken (it's then part of the banker's money).
 local AH_CUT = 0.05
 
+-- What one auction should pay, after the AH's cut.
+function ns.AuctionWorth(p)
+	return (p.unit or 0) * p.qty * (1 - AH_CUT)
+end
+
 function ns.ExpectedIncome(d)
 	local s = d.snap
 	local total = s.saleMoney or 0
 	for _, p in ipairs(s.posted) do
-		if p.confirmed and p.unit and p.expires > time() then
-			total = total + p.unit * p.qty * (1 - AH_CUT)
+		if p.confirmed and not ns.IsExpired(p) then
+			total = total + ns.AuctionWorth(p)
 		end
 	end
 	return math.floor(total)
 end
 
 -- Display order of the statuses (tooltip lines).
-ns.STATUSES = { "flight", "mailbox", "returned", "auction", "toMain", "owned", "unknown" }
+ns.STATUSES = { "flight", "mailbox", "returned", "toMain", "owned", "unknown" }
 
 -- Splits an item's tracked count into where it is believed to be.
 function ns.Breakdown(d, itemID)
@@ -186,7 +223,7 @@ function ns.Breakdown(d, itemID)
 		end
 	end
 
-	local flight, mailbox, toMain, auction = 0, 0, 0, 0
+	local flight, mailbox, toMain = 0, 0, 0
 	for _, mail in pairs(d.mails) do
 		local c = mail.items[itemID]
 		if c then
@@ -198,15 +235,10 @@ function ns.Breakdown(d, itemID)
 	end
 
 	local s = d.snap
-	for _, p in ipairs(s.posted) do
-		if p.confirmed and p.itemID == itemID and p.expires > time() then auction = auction + p.qty end
-	end
-
 	take("flight", flight)
 	take("mailbox", mailbox)
 	take("toMain", toMain)
 	take("returned", s.returned[itemID])
-	take("auction", auction)
 	take("owned", (s.bags[itemID] or 0) + (s.bank[itemID] or 0))
 	take("unknown", rest) -- left the banker's bags without a known reason
 	return r
