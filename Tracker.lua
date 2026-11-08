@@ -202,7 +202,7 @@ local function ScanInbox()
 				notices[key].n = notices[key].n + 1
 			end
 		else
-			local invoiceType, itemName, _, bid, buyout, deposit, consignment, _, _, count = GetInboxInvoiceInfo(i)
+			local invoiceType, itemName, _, bid, buyout, deposit, consignment, _, _, _, count = GetInboxInvoiceInfo(i)
 			if itemName and (invoiceType == "seller" or invoiceType == "seller_temp_invoice") then
 				-- a delayed ("temp") notice carries no gold yet: count what it will pay
 				saleMoney = saleMoney + ((money or 0) > 0 and money

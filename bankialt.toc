@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: BankiAlt
 ## Notes: A virtual bag for your bank alt: mail items to it in bulk and keep track of everything you sent.
-## Version: 0.6.0
+## Version: 0.6.1
 ## SavedVariables: BankiAltDB
 ## OptionalDeps: Bagnon
 ## IconTexture: Interface\Icons\INV_Box_02

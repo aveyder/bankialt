@@ -230,7 +230,7 @@ local function Debug()
 			local _, _, sender, subject, _, _, _, hasItem = GetInboxHeaderInfo(i)
 			print(format("  %d. from \"%s\": %s (%d items)%s", i, tostring(sender), tostring(subject), hasItem or 0,
 				sender and ns.IsMainName(sender) and " [main]" or ""))
-			local invoiceType, itemName, _, bid, _, deposit, consignment, _, _, count = GetInboxInvoiceInfo(i)
+			local invoiceType, itemName, _, bid, _, deposit, consignment, _, _, _, count = GetInboxInvoiceInfo(i)
 			if invoiceType then
 				print(format("     invoice: %s, %s x%s, bid %s, deposit %s, cut %s", invoiceType, tostring(itemName),
 					tostring(count), tostring(bid), tostring(deposit), tostring(consignment)))

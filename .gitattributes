@@ -1,0 +1,3 @@
+# Kept on GitHub, left out of the addon zip built with git archive
+icon.png export-ignore
+.gitattributes export-ignore
