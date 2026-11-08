@@ -1,0 +1,5 @@
+package-as: bankialt
+
+# kept on GitHub, left out of the addon zip (files starting with a dot are always left out)
+ignore:
+  - icon.png

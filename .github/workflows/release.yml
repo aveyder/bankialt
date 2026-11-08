@@ -1,0 +1,43 @@
+# Manual release: Actions -> Release -> Run workflow (on main).
+# Tags the commit with the version from bankialt.toc (## Version: 0.7.0 -> v0.7.0), then the BigWigs packager
+# builds bankialt-v0.7.0.zip and uploads it to CurseForge and to a GitHub release.
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the tag and create the GitHub release
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the packager builds the changelog from the history since the previous tag
+
+      - name: Tag the version from bankialt.toc
+        run: |
+          version=$(sed -n 's/^## Version: *//p' bankialt.toc | tr -d '\r[:space:]')
+          if [ -z "$version" ]; then
+            echo "::error::No '## Version:' line in bankialt.toc"
+            exit 1
+          fi
+          tag="v$version"
+          if existing=$(git rev-parse -q --verify "refs/tags/$tag^{commit}"); then
+            if [ "$existing" != "$(git rev-parse HEAD)" ]; then
+              echo "::error::$tag already exists on another commit: bump '## Version' in bankialt.toc first"
+              exit 1
+            fi
+            echo "$tag is already on this commit: building it again"
+          else
+            git tag "$tag"
+            git push origin "$tag"
+          fi
+
+      - uses: BigWigsMods/packager@v2
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_KEY }}
+          GH_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}

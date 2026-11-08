@@ -1,5 +1,10 @@
 # BankiAlt
 
+[![Release](https://github.com/aveyder/bankialt/actions/workflows/release.yml/badge.svg)](https://github.com/aveyder/bankialt/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/aveyder/bankialt?label=release)](https://github.com/aveyder/bankialt/releases/latest)
+[![CurseForge](https://img.shields.io/curseforge/v/1790319?label=CurseForge)](https://www.curseforge.com/wow/addons/bankialt)
+[![Downloads](https://img.shields.io/curseforge/dt/1790319?label=downloads)](https://www.curseforge.com/wow/addons/bankialt)
+
 **Your bank alt, in your pocket.**
 
 Stop the mailbox grind: typing the alt's name, dragging items one by one, 12 per mail, then doing it all again on the alt. BankiAlt turns your bank alt into a **virtual bag** you can open from any character, anywhere.
@@ -8,15 +13,15 @@ Stop the mailbox grind: typing the alt's name, dragging items one by one, 12 per
 
 - 📬 **Bulk mail in one click.** Alt-click or drag everything you want to stash (or right-click it on the Send tab) and hit **Send**. BankiAlt splits it into as many mails as needed.
 - 🎒 **A bag for your banker.** See everything you've sent, from any of your characters, even far from a mailbox.
-- 🔎 **Know where every item is.** In flight, waiting in the mailbox, on the auction house, back from the AH, or mailed back to you. Each item gets a small status icon in its slot.
-- 💰 **Gold at a glance.** The banker's current gold, plus what its running auctions should bring in.
+- 🔎 **Know where every item is.** In flight, waiting in the mailbox, back from the AH, or mailed back to you. Each item gets a small status icon in its slot.
+- 💰 **Gold at a glance.** The banker's current gold, plus what its auctions should bring in. Items posted on the AH leave the bag and show up under **Auctions** instead: hover it to see each auction and its time left, right-click it to settle an auction whose mail never came.
 - 📥 **One-click collect** on the banker. It only takes mail from your own characters and never touches anything else.
 - 🛡️ **Can't be messed with.** Only mail from your own characters counts, so other players can't change your bag.
 - 🧩 **Feels built-in.** Blizzard-style window, and a button in Bagnon's title bar if you use Bagnon.
 
 ## Get started
 
-1. Clone or download into `Interface/AddOns`:
+1. Install it from [CurseForge](https://www.curseforge.com/wow/addons/bankialt), or download the zip from the [latest release](https://github.com/aveyder/bankialt/releases/latest), or clone it into `Interface/AddOns`:
    ```
    git clone https://github.com/aveyder/bankialt.git
    ```
@@ -39,7 +44,7 @@ Everything happens inside the WoW client. BankiAlt doesn't talk to any website, 
 **What it reads:**
 - Your bags, your money and your mailbox (senders, subjects, attachments and AH sale notices).
 - On the banker, the bank while it's open.
-- The auctions the banker posts and their prices. It notices every auction posted through the game's own posting functions (the Blizzard AH, Auctionator and similar addons); it doesn't scan the AH.
+- The auctions the banker posts and their prices. It notices every auction posted through the game's own posting functions (the Blizzard AH, Auctionator and similar addons); it doesn't scan the AH. An auction ends when its sale or return mail shows up in the banker's mailbox.
 
 **Where it hooks into the game's UI:**
 - **Alt-click in your bags** (Blizzard bags or Bagnon) adds an item to the send list. **Right-click** does the same on the mailbox's Send tab: the game attaches the item to the mail form, and BankiAlt takes it off again.
