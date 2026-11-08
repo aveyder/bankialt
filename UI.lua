@@ -167,7 +167,8 @@ StaticPopupDialogs["BANKIALT_FORGET"] = {
 	text = "Remove %s from the virtual bag?",
 	button1 = REMOVE or YES,
 	button2 = CANCEL,
-	OnAccept = function(_, itemID) ns.Forget(itemID) end,
+	-- the item is set on the dialog after showing it (as Auctionator does): this client may not pass the data argument on
+	OnAccept = function(self) if self.data then ns.Forget(self.data) end end,
 	timeout = 0,
 	whileDead = true,
 	hideOnEscape = true,
@@ -226,7 +227,8 @@ local function SlotOnClick(self, button)
 		if self.staged then
 			ns.Unstage(self.staged)
 		else
-			StaticPopup_Show("BANKIALT_FORGET", link or ("item " .. self.itemID), nil, self.itemID)
+			local dialog = StaticPopup_Show("BANKIALT_FORGET", link or ("item " .. self.itemID))
+			if dialog then dialog.data = self.itemID end
 		end
 	else
 		PickUp(self)
